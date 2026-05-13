@@ -1,0 +1,63 @@
+version: "3"
+
+vars:
+  BINARY: helm-crd-wrapper
+
+tasks:
+  default:
+    cmds:
+      - task: check
+
+  build:
+    desc: Build the helm-crd-wrapper binary
+    cmds:
+      - go build -trimpath -o bin/{{.BINARY}} .
+
+  test:
+    desc: Run unit and integration tests
+    cmds:
+      - go test ./... -race -count=1
+
+  test-update-golden:
+    desc: Regenerate golden test fixtures
+    cmds:
+      - go test ./internal/wrapper -run TestGolden -update
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run ./...
+
+  fmt:
+    desc: Format Go sources
+    cmds:
+      - gofmt -s -w .
+      - goimports -w .
+
+  helm-lint:
+    desc: Render a wrapped CRD through helm template to confirm valid output
+    cmds:
+      - bash scripts/helm-lint-smoke.sh
+
+  check:
+    desc: Run build, test, lint, and helm-lint smoke
+    cmds:
+      - task: build
+      - task: test
+      - task: lint
+      - task: helm-lint
+
+  install:
+    desc: Install the binary to $GOBIN
+    cmds:
+      - go install .
+
+  release-snapshot:
+    desc: Build a local snapshot release with goreleaser
+    cmds:
+      - goreleaser release --snapshot --clean
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -rf bin dist

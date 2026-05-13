@@ -1,0 +1,32 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.3
+  name: pipelines.example.stacklok.dev
+spec:
+  group: example.stacklok.dev
+  names:
+    kind: Pipeline
+    listKind: PipelineList
+    plural: pipelines
+    singular: pipeline
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                template:
+                  type: string
+                  description: 'Inline template, e.g. {{ .steps.first.output }} or {{ .input }}.'
+                fallback:
+                  type: string
+                  description: 'Closing braces only example }} test.'
