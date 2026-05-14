@@ -4,6 +4,54 @@ A generic CLI tool that wraps Kubernetes CRD YAML files (typically the output
 of `controller-gen`) with Helm template directives so they can be shipped as
 upgrade-aware chart templates.
 
+## Why this tool exists
+
+Shipping CRDs inside a Helm chart has three problems that bite anyone who
+tries it naively:
+
+### 1. Helm does not upgrade CRDs placed in `crds/`
+
+`helm upgrade` deliberately skips anything under a chart's `crds/`
+directory — it's a [documented Helm limitation](https://helm.sh/docs/chart_best_practices/custom_resource_definitions/#some-caveats-and-explanations)
+intended to prevent accidental data loss. Users who upgrade a chart whose
+CRDs only live in `crds/` end up running new operator code against stale
+CRD definitions. Bugs from that combination are silent and confusing.
+
+The standard workaround is to put CRDs under `templates/` instead, gated by
+a Helm conditional, so they're upgraded alongside everything else in the
+chart. This is the approach used by cert-manager, kube-prometheus-stack,
+and many other production charts.
+
+### 2. CRDs in `templates/` get deleted on `helm uninstall`
+
+The flip side of putting CRDs in `templates/` is that `helm uninstall` will
+delete them. Deleting a CRD cascade-deletes every custom resource that was
+backed by it — which for most operator charts means deleting the user's
+data. Bad.
+
+The fix is the `helm.sh/resource-policy: keep` annotation. Helm honours
+that annotation and leaves the CRD (and therefore the custom resources)
+alone on uninstall. Operators can then be reinstalled and pick the state
+back up.
+
+### 3. `controller-gen` doesn't know about any of this
+
+`controller-gen` emits raw CRD YAML — no Helm conditional, no keep
+annotation. It also occasionally embeds literal `{{` / `}}` inside CRD
+description docstrings, which Helm will try to interpret as template
+directives and fail to render the chart.
+
+So between `controller-gen` and a shippable chart, somebody has to:
+
+1. Wrap each CRD in `{{- if .Values.crds.install }} ... {{- end }}`.
+2. Inject `helm.sh/resource-policy: keep` under `metadata.annotations`.
+3. Escape stray `{{` / `}}` inside CRD descriptions.
+
+That's what this tool does — generically, in one pass, with no per-CRD
+configuration to maintain.
+
+## What it does
+
 The wrapper applies two independent, globally-configured concerns plus
 template-delimiter escaping:
 
@@ -11,16 +59,17 @@ template-delimiter escaping:
    {{- end }}` so consumers can turn CRD installation on or off via
    `values.yaml`.
 2. **`helm.sh/resource-policy: keep` annotation** — injected under
-   `metadata.annotations` so `helm uninstall` does not cascade-delete every
-   custom resource in the cluster. The injected block itself is wrapped in
-   `{{- if .Values.crds.keep }}` so chart consumers can still flip it off.
-3. **Go-template delimiter escaping** in CRD description text.
-   `controller-gen` often emits literal `{{` / `}}` inside docstrings; Helm
-   would otherwise try to interpret them and fail to render.
+   `metadata.annotations`. The injected block is itself wrapped in
+   `{{- if .Values.crds.keep }}` so chart consumers can still flip it off
+   at render time (the chart should default `crds.keep: true` to make the
+   safe choice the default).
+3. **Go-template delimiter escaping** in CRD description text. Helm-safe
+   literals (`{{ "{{" }}` / `{{ "}}" }}`) are substituted in place of any
+   raw delimiters that `controller-gen` emitted into description fields.
 
 Each toggle is global across the directory of CRDs. There is no per-CRD
-configuration — keep the tool's job narrow, make the chart's `values.yaml`
-the single source of truth for gating.
+configuration — keeping the tool's job narrow makes the chart's
+`values.yaml` the single source of truth for gating.
 
 ## Install
 
