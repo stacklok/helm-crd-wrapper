@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: build / test / lint / helm-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify gofmt
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "Files need gofmt:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: Build
+        run: go build -trimpath -o bin/helm-crd-wrapper .
+
+      - name: Test (with race)
+        run: go test ./... -race -count=1
+
+      - name: Verify golden files are up to date
+        run: |
+          go test ./internal/wrapper -run TestGolden -update
+          if ! git diff --quiet --exit-code internal/testdata/golden; then
+            echo "Golden fixtures drifted. Run 'task test-update-golden' and commit."
+            git --no-pager diff internal/testdata/golden
+            exit 1
+          fi
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: helm template smoke test
+        run: bash scripts/helm-lint-smoke.sh
