@@ -4,20 +4,23 @@ A generic CLI tool that wraps Kubernetes CRD YAML files (typically the output
 of `controller-gen`) with Helm template directives so they can be shipped as
 upgrade-aware chart templates.
 
-The wrapper handles three independent concerns:
+The wrapper applies two independent, globally-configured concerns plus
+template-delimiter escaping:
 
-1. **`helm.sh/resource-policy: keep` annotation** so `helm uninstall` does not
-   cascade-delete every custom resource in the cluster.
-2. **Feature-flag conditionals** (`{{- if .Values... }} ... {{- end }}`) so a
-   chart can install only the CRD groups a given consumer enables.
-3. **Go-template delimiter escaping** in CRD description text. `controller-gen`
-   often emits `{{` / `}}` inside field docstrings; Helm would otherwise try
-   to interpret these and fail to render.
+1. **Install gate** — wraps each CRD in `{{- if .Values.crds.install }} ...
+   {{- end }}` so consumers can turn CRD installation on or off via
+   `values.yaml`.
+2. **`helm.sh/resource-policy: keep` annotation** — injected under
+   `metadata.annotations` so `helm uninstall` does not cascade-delete every
+   custom resource in the cluster. The injected block itself is wrapped in
+   `{{- if .Values.crds.keep }}` so chart consumers can still flip it off.
+3. **Go-template delimiter escaping** in CRD description text.
+   `controller-gen` often emits literal `{{` / `}}` inside docstrings; Helm
+   would otherwise try to interpret them and fail to render.
 
-Each toggle can be turned on or off independently, and per-CRD overrides can
-be supplied via an optional YAML config file. The behaviour replaces the
-hardcoded feature-flag map that lived in `stacklok/toolhive` so consumer repos
-can adopt the tool without forking.
+Each toggle is global across the directory of CRDs. There is no per-CRD
+configuration — keep the tool's job narrow, make the chart's `values.yaml`
+the single source of truth for gating.
 
 ## Install
 
@@ -34,178 +37,126 @@ Or download a release binary from the
 helm-crd-wrapper \
   -source <dir>           # required: directory of raw CRD YAML files
   -target <dir>           # required: directory to write wrapped templates
-  -config <file>          # optional: YAML config for per-CRD rules
-  -keep                   # optional: inject helm.sh/resource-policy: keep
-                          #          (default: false)
-  -escape                 # optional: escape {{ }} in CRD content
+  -install                # wrap each CRD in {{- if .Values.crds.install }}
                           #          (default: true)
-  -values-prefix <string> # optional: values key prefix for feature flags
-                          #          (default: ".Values.crds.install")
-  -templates-dir <dir>    # optional: override embedded templates from disk
-  -verbose                # optional: extra logging
+  -keep                   # inject helm.sh/resource-policy: keep
+                          #          (default: true)
+  -escape                 # escape {{ }} in CRD content
+                          #          (default: true)
+  -templates-dir <dir>    # override embedded templates from disk
+  -verbose                # extra logging
 ```
 
 Exit code `0` on success. `1` on any wrapping error (missing file, invalid
-YAML, source path escape, strict-mode config miss, …). `2` when required
-flags are missing.
+YAML, source path escape, etc.). `2` when required flags are missing.
 
-## Config file format
-
-The optional `-config` YAML file declares per-CRD feature-flag rules. The
-**only** per-CRD field is `featureFlags`. Anything not listed falls back to
-the CLI-flag defaults.
-
-```yaml
-# Top-level: when true, every CRD found in -source must have an entry below or
-# the run fails. This is the regression gate that catches "forgot to add the
-# new CRD to the config" bugs that motivated this tool.
-strict: true
-
-crds:
-  mcpservers.toolhive.stacklok.dev:
-    featureFlags: [server]
-
-  # A single CRD can be gated behind multiple flags. The wrapper renders this
-  # as `or .Values.crds.install.server .Values.crds.install.virtualMcp`.
-  mcpexternalauthconfigs.toolhive.stacklok.dev:
-    featureFlags: [server, virtualMcp]
-
-  # No featureFlags → installed unconditionally (header/footer are omitted).
-  aigateways.ai-gateway.stacklok.dev: {}
-```
-
-Keys under `crds:` are matched against the full CRD `metadata.name`
-(plural.group). Unknown fields (including the legacy `keep:` per-CRD field)
-are rejected so misconfigurations fail loudly.
-
-### Why isn't `keep` a per-CRD option?
-
-The `helm.sh/resource-policy: keep` annotation is a global, all-or-nothing
-choice for a chart: either every CRD survives `helm uninstall` or none do.
-Mixed behaviour would leak custom resources whose CRDs got deleted, which is
-the exact footgun the annotation exists to prevent. So `-keep` lives only on
-the CLI flag, and consumers can still flip it off at render time via
-`.Values.crds.keep` (see below).
-
-## End-to-end examples
-
-### Example 1 — `stacklok/toolhive`
-
-toolhive wants feature flags, the keep annotation, and a per-CRD list of which
-flags each CRD belongs to. The config file replaces the hardcoded map that
-used to live in the toolhive source tree.
-
-`crds-config.yaml`:
-
-```yaml
-strict: true
-crds:
-  mcpservers.toolhive.stacklok.dev:                      { featureFlags: [server] }
-  mcpremoteproxies.toolhive.stacklok.dev:                { featureFlags: [server] }
-  mcptoolconfigs.toolhive.stacklok.dev:                  { featureFlags: [server] }
-  mcpgroups.toolhive.stacklok.dev:                       { featureFlags: [server] }
-  embeddingservers.toolhive.stacklok.dev:                { featureFlags: [server] }
-  mcpregistries.toolhive.stacklok.dev:                   { featureFlags: [registry] }
-  virtualmcpservers.toolhive.stacklok.dev:               { featureFlags: [virtualMcp] }
-  virtualmcpcompositetooldefinitions.toolhive.stacklok.dev:
-                                                         { featureFlags: [virtualMcp] }
-  mcpoidcconfigs.toolhive.stacklok.dev:                  { featureFlags: [server] }
-  mcptelemetryconfigs.toolhive.stacklok.dev:             { featureFlags: [server] }
-  mcpexternalauthconfigs.toolhive.stacklok.dev:          { featureFlags: [server, virtualMcp] }
-  mcpserverentries.toolhive.stacklok.dev:                { featureFlags: [server, virtualMcp] }
-  mcpwebhookconfigs.toolhive.stacklok.dev:               { featureFlags: [server] }
-```
-
-Invocation:
+The typical invocation in CI is just:
 
 ```bash
-helm-crd-wrapper \
-  -source deploy/charts/operator-crds/files/crds \
-  -target deploy/charts/operator-crds/templates \
-  -config deploy/charts/operator-crds/crds-config.yaml \
-  -keep \
-  -values-prefix .Values.crds.install
+helm-crd-wrapper -source ./crds -target ./templates
 ```
 
-The wrapped chart consumes the values:
+All three toggles default to true, so you only flip them when you want
+something different (e.g. `-install=false` to ship unconditional CRDs).
 
-```yaml
-crds:
-  keep: true          # consumed by the keep-annotation template
-  install:
-    server: true      # consumed by the per-CRD feature-flag conditionals
-    registry: true
-    virtualMcp: true
-```
+## How the toggles flow into `values.yaml`
 
-### Example 2 — `stacklok/stacklok-llm-gateway`
+The wrapper makes **build-time** choices that emit Helm template scaffolding;
+the chart consumer makes the **render-time** choice via `values.yaml`:
 
-llm-gateway wants the keep annotation on every CRD and no feature flags. No
-config file is required.
+| CLI flag    | Build-time effect                            | Render-time control                                              |
+| ----------- | -------------------------------------------- | ---------------------------------------------------------------- |
+| `-install`  | Wraps each CRD in `{{- if .Values.crds.install }} ... {{- end }}` | `crds.install: true/false` in `values.yaml`           |
+| `-keep`     | Injects the keep-annotation block, itself wrapped in `{{- if .Values.crds.keep }}` | `crds.keep: true/false` in `values.yaml`     |
+| `-escape`   | Rewrites raw `{{`/`}}` in CRD descriptions to Helm-safe literals | n/a (escape is purely a build-time fix-up)                       |
 
-```bash
-helm-crd-wrapper \
-  -source charts/operator-crds/files/crds \
-  -target charts/operator-crds/templates \
-  -keep
-```
-
-The wrapped chart consumes the single value:
-
-```yaml
-crds:
-  keep: true
-```
-
-## How `keep` flows from `values.yaml`
-
-The `-keep` flag is a **build-time** decision: it controls whether the
-`keep-annotation.tpl` block is injected into the wrapped CRD templates at all.
-
-The injected block itself is wrapped in `{{- if .Values.crds.keep }}`, so the
-chart consumer makes the final **render-time** decision in their
-`values.yaml`:
+A consumer chart therefore needs:
 
 ```yaml
 # values.yaml
 crds:
-  keep: true   # render helm.sh/resource-policy: keep on every CRD
+  install: true   # render CRDs at all (set false to skip CRD installation)
+  keep: true      # add helm.sh/resource-policy: keep annotation
 ```
 
-After `helm template` runs, the CRD looks like:
+The wrapped output looks like:
 
 ```yaml
+{{- if .Values.crds.install }}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
 metadata:
   annotations:
-    helm.sh/resource-policy: keep      # present when crds.keep=true
+    {{- if .Values.crds.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
     controller-gen.kubebuilder.io/version: v0.17.3
-  name: mcpservers.toolhive.stacklok.dev
+  name: widgets.example.stacklok.dev
+spec:
+  ...
+{{- end }}
 ```
 
-With `crds.keep: false` the annotation is omitted entirely and Helm will
-cascade-delete the CRDs (and every custom resource they back) on `helm
-uninstall`. Charts that ship `keep` should default `crds.keep: true` in their
-`values.yaml` to make that the safe default.
+## Why no per-CRD configuration?
 
-If you'd rather hardcode the annotation always-on without giving consumers an
-opt-out, override `keep-annotation.tpl` via `-templates-dir` and drop the
-`{{- if .Values.crds.keep }}` wrapper. See the next section.
+Both wrapping decisions are properties of the **chart**, not the **CRD**:
+
+- Either every CRD survives `helm uninstall` or none do. Mixed `keep`
+  behaviour would leak custom resources whose CRDs got deleted — the exact
+  footgun the annotation exists to prevent.
+- Either the chart manages CRD installation or it does not. Splitting CRDs
+  into install/no-install groups inside a single chart is a smell that
+  usually means there should be two charts.
+
+So the tool stays narrow: one binary, two flags, no per-CRD overrides.
 
 ## Overriding the templates
 
 The embedded templates live under
 [`internal/wrapper/templates`](./internal/wrapper/templates/). To replace any
-of them, point `-templates-dir` at a directory containing the three files:
+of them, point `-templates-dir` at a directory containing all three files:
 
 | File                  | Purpose                                                                            |
 | --------------------- | ---------------------------------------------------------------------------------- |
-| `header.tpl`          | Opening line, with the literal placeholder `__FEATURE_CONDITION__`.                |
-| `footer.tpl`          | Closing line.                                                                      |
-| `keep-annotation.tpl` | Block inserted under `metadata.annotations:` when `-keep` (or per-CRD) is enabled. |
+| `header.tpl`          | Opening conditional (default: `{{- if .Values.crds.install }}`).                   |
+| `footer.tpl`          | Closing line (default: `{{- end }}`).                                              |
+| `keep-annotation.tpl` | Block inserted under `metadata.annotations:` when `-keep` is enabled.              |
 
-The default `keep-annotation.tpl` itself uses `{{- if .Values.crds.keep }}` so
-consumers can still flip the annotation off at render time. Override the file
-to change that.
+For example, a chart that wants the install gate to read
+`.Values.installCRDs` rather than `.Values.crds.install` can override
+`header.tpl` to `{{- if .Values.installCRDs }}` and nothing else changes.
+
+A chart that wants the keep annotation always on (no `crds.keep` value)
+can override `keep-annotation.tpl` to drop the `{{- if .Values.crds.keep }}`
+wrapper.
+
+## End-to-end examples
+
+### `stacklok/toolhive`
+
+```bash
+helm-crd-wrapper \
+  -source deploy/charts/operator-crds/files/crds \
+  -target deploy/charts/operator-crds/templates
+```
+
+`values.yaml`:
+
+```yaml
+crds:
+  install: true
+  keep: true
+```
+
+### `stacklok/stacklok-llm-gateway`
+
+Same invocation — the tool is intentionally a single shape:
+
+```bash
+helm-crd-wrapper \
+  -source charts/operator-crds/files/crds \
+  -target charts/operator-crds/templates
+```
 
 ## Migration plan
 
@@ -214,12 +165,12 @@ itself does not live in this repo — these are notes for the consumer PRs.
 
 1. **`stacklok/toolhive`** — delete
    `deploy/charts/operator-crds/crd-helm-wrapper/`, add a `task crd-wrap`
-   target that calls this binary with the config file in Example 1, wire it
-   into `task generate` after `controller-gen`. Compare the produced output
-   against the previous wrapper's output byte-for-byte before merging.
-
+   target that calls this binary, wire it into `task generate` after
+   `controller-gen`. Collapse the multiple `crds.install.<group>` values in
+   the chart's `values.yaml` down to a single `crds.install` boolean (and
+   adjust any docs accordingly).
 2. **`stacklok/stacklok-llm-gateway`** — add a `task crd-wrap` target
-   that runs Example 2, replace the hand-maintained
+   that runs the same invocation, replace the hand-maintained
    `charts/operator-crds/templates/crds.yaml` with the generated per-CRD
    files.
 
@@ -241,6 +192,8 @@ task check              # build + test + lint + helm-lint
 - **Helm chart scaffolding.** Consumers wire the output into their own
   charts.
 - **Helm plugin shape.** The tool is a single static Go binary.
+- **Per-CRD configuration.** See above — both wrapping decisions are
+  chart-level concerns.
 
 ## License
 

@@ -17,9 +17,8 @@ import (
 	"testing"
 )
 
-// TestCLI_EndToEnd builds the binary and runs it against the fixtures in
-// internal/testdata, asserting that the output matches the corresponding
-// golden files for a known toolhive-style configuration.
+// TestCLI_EndToEnd builds the binary and runs it against a fixture, asserting
+// that the output matches the install+keep+escape golden file.
 func TestCLI_EndToEnd(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping CLI integration test in short mode")
@@ -38,22 +37,11 @@ func TestCLI_EndToEnd(t *testing.T) {
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Copy the no_annotations fixture so we get a deterministic input/output
-	// pair to compare against a known golden.
-	data, err := os.ReadFile(filepath.Join("internal", "testdata", "input", "no_annotations.yaml"))
+	data, err := os.ReadFile(filepath.Join("internal", "testdata", "input", "with_template_chars.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(src, "no_annotations.yaml"), data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfgPath := filepath.Join(dir, "config.yaml")
-	cfgBody := `crds:
-  widgets.example.stacklok.dev:
-    featureFlags: [core]
-`
-	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(src, "with_template_chars.yaml"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -61,9 +49,9 @@ func TestCLI_EndToEnd(t *testing.T) {
 	run := exec.Command(bin,
 		"-source", src,
 		"-target", tgt,
-		"-config", cfgPath,
-		"-values-prefix", ".Values.features",
-		"-escape", "true",
+		"-install",
+		"-keep",
+		"-escape",
 	)
 	run.Stdout = out
 	run.Stderr = out
@@ -71,11 +59,11 @@ func TestCLI_EndToEnd(t *testing.T) {
 		t.Fatalf("run binary failed: %v\nlog:\n%s", err, out.String())
 	}
 
-	produced, err := os.ReadFile(filepath.Join(tgt, "no_annotations.yaml"))
+	produced, err := os.ReadFile(filepath.Join(tgt, "with_template_chars.yaml"))
 	if err != nil {
 		t.Fatalf("read produced output: %v", err)
 	}
-	golden, err := os.ReadFile(filepath.Join("internal", "testdata", "golden", "custom-prefix-and-flag.golden.yaml"))
+	golden, err := os.ReadFile(filepath.Join("internal", "testdata", "golden", "install-keep-escape.golden.yaml"))
 	if err != nil {
 		t.Fatalf("read golden: %v", err)
 	}

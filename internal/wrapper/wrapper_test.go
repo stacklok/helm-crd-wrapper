@@ -42,8 +42,7 @@ func readFixture(t *testing.T, rel string) []byte {
 func TestWrapContent_KeepInjectionExistingAnnotations(t *testing.T) {
 	t.Parallel()
 	in := readFixture(t, "input/with_annotations.yaml")
-	rule := ResolvedRule{Keep: true, Escape: false}
-	got, err := WrapContent(in, loadTestTemplates(t), rule, DefaultValuesPrefix)
+	got, err := WrapContent(in, loadTestTemplates(t), Rule{Keep: true})
 	if err != nil {
 		t.Fatalf("WrapContent: %v", err)
 	}
@@ -54,7 +53,6 @@ func TestWrapContent_KeepInjectionExistingAnnotations(t *testing.T) {
 	if strings.Count(s, "annotations:") != 1 {
 		t.Errorf("expected exactly one annotations: block, got %d", strings.Count(s, "annotations:"))
 	}
-	// keep template appears immediately after the existing annotations: line.
 	idxAnn := strings.Index(s, "annotations:")
 	idxKeep := strings.Index(s, "helm.sh/resource-policy: keep")
 	if idxAnn < 0 || idxKeep < idxAnn {
@@ -67,8 +65,7 @@ func TestWrapContent_KeepInjectionExistingAnnotations(t *testing.T) {
 func TestWrapContent_KeepInjectionMissingAnnotations(t *testing.T) {
 	t.Parallel()
 	in := readFixture(t, "input/no_annotations.yaml")
-	rule := ResolvedRule{Keep: true, Escape: false}
-	got, err := WrapContent(in, loadTestTemplates(t), rule, DefaultValuesPrefix)
+	got, err := WrapContent(in, loadTestTemplates(t), Rule{Keep: true})
 	if err != nil {
 		t.Fatalf("WrapContent: %v", err)
 	}
@@ -89,8 +86,7 @@ func TestWrapContent_KeepInjectionMissingAnnotations(t *testing.T) {
 func TestWrapContent_KeepDisabledLeavesContentAlone(t *testing.T) {
 	t.Parallel()
 	in := readFixture(t, "input/no_annotations.yaml")
-	rule := ResolvedRule{Keep: false, Escape: false}
-	got, err := WrapContent(in, loadTestTemplates(t), rule, DefaultValuesPrefix)
+	got, err := WrapContent(in, loadTestTemplates(t), Rule{})
 	if err != nil {
 		t.Fatalf("WrapContent: %v", err)
 	}
@@ -108,7 +104,7 @@ func TestWrapContent_EscapeToggle(t *testing.T) {
 	in := readFixture(t, "input/with_template_chars.yaml")
 	tmpls := loadTestTemplates(t)
 
-	on, err := WrapContent(in, tmpls, ResolvedRule{Escape: true}, DefaultValuesPrefix)
+	on, err := WrapContent(in, tmpls, Rule{Escape: true})
 	if err != nil {
 		t.Fatalf("escape on: %v", err)
 	}
@@ -116,7 +112,7 @@ func TestWrapContent_EscapeToggle(t *testing.T) {
 		t.Error("escape=true should produce escaped open delimiters")
 	}
 
-	off, err := WrapContent(in, tmpls, ResolvedRule{Escape: false}, DefaultValuesPrefix)
+	off, err := WrapContent(in, tmpls, Rule{Escape: false})
 	if err != nil {
 		t.Fatalf("escape off: %v", err)
 	}
@@ -128,53 +124,38 @@ func TestWrapContent_EscapeToggle(t *testing.T) {
 	}
 }
 
-// TestWrapContent_FeatureFlagSingle confirms a one-flag CRD gets a single
-// .Values reference (no `or`).
-func TestWrapContent_FeatureFlagSingle(t *testing.T) {
+// TestWrapContent_InstallWrapsInConditional confirms Install=true emits the
+// install gate header/footer.
+func TestWrapContent_InstallWrapsInConditional(t *testing.T) {
 	t.Parallel()
 	in := readFixture(t, "input/with_annotations.yaml")
-	rule := ResolvedRule{FeatureFlags: []string{"server"}}
-	got, err := WrapContent(in, loadTestTemplates(t), rule, DefaultValuesPrefix)
+	got, err := WrapContent(in, loadTestTemplates(t), Rule{Install: true})
 	if err != nil {
 		t.Fatalf("WrapContent: %v", err)
 	}
 	s := string(got)
-	if !strings.HasPrefix(s, "{{- if .Values.crds.install.server }}") {
+	if !strings.HasPrefix(s, "{{- if .Values.crds.install }}\n") {
 		t.Errorf("unexpected header: %q", firstLine(s))
 	}
 	if !strings.HasSuffix(s, "{{- end }}\n") {
-		t.Errorf("unexpected footer (last 16 bytes): %q", s[max(0, len(s)-16):])
+		t.Errorf("expected {{- end }} footer, got tail %q", s[max(0, len(s)-32):])
 	}
 }
 
-// TestWrapContent_FeatureFlagMultiple confirms multi-flag rendering uses `or`.
-func TestWrapContent_FeatureFlagMultiple(t *testing.T) {
+// TestWrapContent_InstallDisabledSkipsHeader confirms Install=false produces
+// no Helm wrapper at all.
+func TestWrapContent_InstallDisabledSkipsHeader(t *testing.T) {
 	t.Parallel()
 	in := readFixture(t, "input/with_annotations.yaml")
-	rule := ResolvedRule{FeatureFlags: []string{"server", "virtualMcp"}}
-	got, err := WrapContent(in, loadTestTemplates(t), rule, DefaultValuesPrefix)
-	if err != nil {
-		t.Fatalf("WrapContent: %v", err)
-	}
-	if !strings.HasPrefix(string(got), "{{- if or .Values.crds.install.server .Values.crds.install.virtualMcp }}") {
-		t.Errorf("expected multi-flag or-condition header, got %q", firstLine(string(got)))
-	}
-}
-
-// TestWrapContent_NoFlagsSkipsHeader confirms zero-flag CRDs are passed
-// through without a Helm `{{- if }}` wrapper.
-func TestWrapContent_NoFlagsSkipsHeader(t *testing.T) {
-	t.Parallel()
-	in := readFixture(t, "input/with_annotations.yaml")
-	got, err := WrapContent(in, loadTestTemplates(t), ResolvedRule{}, DefaultValuesPrefix)
+	got, err := WrapContent(in, loadTestTemplates(t), Rule{})
 	if err != nil {
 		t.Fatalf("WrapContent: %v", err)
 	}
 	if strings.Contains(string(got), "{{- if") {
-		t.Error("zero-flag CRDs should not emit a {{- if header")
+		t.Error("Install=false should not emit a {{- if header")
 	}
 	if strings.Contains(string(got), "{{- end }}") {
-		t.Error("zero-flag CRDs should not emit a {{- end footer")
+		t.Error("Install=false should not emit a {{- end footer")
 	}
 }
 
@@ -185,8 +166,8 @@ func firstLine(s string) string {
 	return s
 }
 
-// TestWrapContent_RejectsNonCRDKind is exercised at the file-walking layer, not
-// directly in WrapContent. Test via run flow on a tmpdir.
+// TestRun_RejectsNonCRDKind exercises the file-walking layer with a
+// non-CRD document and confirms it fails fast.
 func TestRun_RejectsNonCRDKind(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -198,7 +179,7 @@ func TestRun_RejectsNonCRDKind(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "bad.yaml"), []byte("kind: ConfigMap\nmetadata:\n  name: x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := Run(Options{SourceDir: src, TargetDir: tgt, Defaults: Defaults{}, Stdout: discardWriter{}})
+	err := Run(Options{SourceDir: src, TargetDir: tgt, Stdout: discardWriter{}})
 	if err == nil {
 		t.Fatal("expected error on non-CRD kind")
 	}
@@ -224,7 +205,7 @@ func TestRun_EmptySourceDirFails(t *testing.T) {
 }
 
 // TestRun_TemplatesDirOverride confirms -templates-dir replaces embedded
-// templates.
+// templates wholesale (header / footer / keep-annotation).
 func TestRun_TemplatesDirOverride(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -236,7 +217,7 @@ func TestRun_TemplatesDirOverride(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(tdir, "header.tpl"), []byte("HEADER-"+FeatureConditionPlaceholder+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(tdir, "header.tpl"), []byte("HEADER\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(tdir, "footer.tpl"), []byte("FOOTER\n"), 0o600); err != nil {
@@ -255,7 +236,7 @@ func TestRun_TemplatesDirOverride(t *testing.T) {
 		SourceDir:    src,
 		TargetDir:    tgt,
 		TemplatesDir: tdir,
-		Defaults:     Defaults{FeatureFlags: []string{"core"}, Keep: true, Escape: false},
+		Rule:         Rule{Install: true, Keep: true, Escape: false},
 		Stdout:       discardWriter{},
 	})
 	if err != nil {
@@ -266,7 +247,7 @@ func TestRun_TemplatesDirOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(out)
-	if !strings.HasPrefix(s, "HEADER-.Values.crds.install.core\n") {
+	if !strings.HasPrefix(s, "HEADER\n") {
 		t.Errorf("override header not used: %q", firstLine(s))
 	}
 	if !strings.HasSuffix(s, "FOOTER\n") {
@@ -274,34 +255,6 @@ func TestRun_TemplatesDirOverride(t *testing.T) {
 	}
 	if !strings.Contains(s, "KEEP-ANNOTATION") {
 		t.Errorf("override keep template not used")
-	}
-}
-
-// TestRun_StrictModeFailsOnMissingCRD is the regression gate replacing
-// toolhive's hardcoded map.
-func TestRun_StrictModeFailsOnMissingCRD(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	src := filepath.Join(dir, "src")
-	if err := os.MkdirAll(src, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	in := readFixture(t, "input/with_annotations.yaml")
-	if err := os.WriteFile(filepath.Join(src, "with_annotations.yaml"), in, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg := &Config{Strict: true, CRDs: map[string]CRDConfig{}}
-	err := Run(Options{
-		SourceDir: src,
-		TargetDir: filepath.Join(dir, "tgt"),
-		Config:    cfg,
-		Stdout:    discardWriter{},
-	})
-	if err == nil {
-		t.Fatal("expected strict-mode failure")
-	}
-	if !strings.Contains(err.Error(), "strict mode") {
-		t.Errorf("error %v should mention strict mode", err)
 	}
 }
 

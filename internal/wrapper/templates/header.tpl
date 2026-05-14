@@ -1,1 +1,1 @@
-{{- if __FEATURE_CONDITION__ }}
+{{- if .Values.crds.install }}

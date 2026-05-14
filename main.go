@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Command helm-crd-wrapper wraps Kubernetes CRD YAML files with Helm template
-// conditionals (feature flags, resource-policy: keep annotation, and template
-// delimiter escaping).
+// Command helm-crd-wrapper wraps Kubernetes CRD YAML files with a Helm
+// install gate ({{- if .Values.crds.install }}) and an optional
+// helm.sh/resource-policy: keep annotation, plus template-delimiter
+// escaping for CRD descriptions.
 package main
 
 import (
@@ -36,10 +37,9 @@ func main() {
 	var (
 		sourceDir    = flag.String("source", "", "Source directory containing raw CRD YAML files (required)")
 		targetDir    = flag.String("target", "", "Target directory for wrapped Helm templates (required)")
-		configPath   = flag.String("config", "", "Optional YAML config file with per-CRD rules")
-		keep         = flag.Bool("keep", false, "Inject helm.sh/resource-policy: keep annotation by default")
+		install      = flag.Bool("install", true, "Wrap each CRD in {{- if .Values.crds.install }} ... {{- end }}")
+		keep         = flag.Bool("keep", true, "Inject helm.sh/resource-policy: keep annotation")
 		escape       = flag.Bool("escape", true, "Escape literal {{ and }} in CRD content")
-		valuesPrefix = flag.String("values-prefix", wrapper.DefaultValuesPrefix, "Values key prefix for feature flags")
 		templatesDir = flag.String("templates-dir", "", "Override embedded templates from disk")
 		verbose      = flag.Bool("verbose", false, "Enable verbose output")
 		showVersion  = flag.Bool("version", false, "Print version and exit")
@@ -60,22 +60,15 @@ func main() {
 		os.Exit(2)
 	}
 
-	cfg, err := wrapper.LoadConfig(*configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
 	if err := wrapper.Run(wrapper.Options{
 		SourceDir:    *sourceDir,
 		TargetDir:    *targetDir,
-		Config:       cfg,
-		ValuesPrefix: *valuesPrefix,
 		TemplatesDir: *templatesDir,
 		Verbose:      *verbose,
-		Defaults: wrapper.Defaults{
-			Keep:   *keep,
-			Escape: *escape,
+		Rule: wrapper.Rule{
+			Install: *install,
+			Keep:    *keep,
+			Escape:  *escape,
 		},
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

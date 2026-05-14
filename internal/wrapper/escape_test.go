@@ -30,8 +30,8 @@ func TestEscapeTemplateDelimiters(t *testing.T) {
 		},
 		{
 			name: "intentional Helm directive {{- if preserved",
-			in:   "{{- if .Values.crds.install.server }}",
-			want: "{{- if .Values.crds.install.server }}",
+			in:   "{{- if .Values.crds.install }}",
+			want: "{{- if .Values.crds.install }}",
 		},
 		{
 			name: "intentional Helm directive referencing .Values preserved",
@@ -56,53 +56,6 @@ func TestEscapeTemplateDelimiters(t *testing.T) {
 			got := EscapeTemplateDelimiters(tt.in)
 			if got != tt.want {
 				t.Errorf("EscapeTemplateDelimiters(%q)\n  got:  %q\n  want: %q", tt.in, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestBuildFeatureCondition(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		flags  []string
-		prefix string
-		want   string
-	}{
-		{name: "no flags returns empty", flags: nil, prefix: DefaultValuesPrefix, want: ""},
-		{
-			name:   "single flag with default prefix",
-			flags:  []string{"server"},
-			prefix: DefaultValuesPrefix,
-			want:   ".Values.crds.install.server",
-		},
-		{
-			name:   "multiple flags OR-joined",
-			flags:  []string{"server", "virtualMcp"},
-			prefix: DefaultValuesPrefix,
-			want:   "or .Values.crds.install.server .Values.crds.install.virtualMcp",
-		},
-		{
-			name:   "custom prefix is honoured",
-			flags:  []string{"core"},
-			prefix: ".Values.features",
-			want:   ".Values.features.core",
-		},
-		{
-			name:   "empty prefix falls back to default",
-			flags:  []string{"server"},
-			prefix: "",
-			want:   ".Values.crds.install.server",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := BuildFeatureCondition(tt.flags, tt.prefix)
-			if got != tt.want {
-				t.Errorf("BuildFeatureCondition(%v, %q) = %q, want %q", tt.flags, tt.prefix, got, tt.want)
 			}
 		})
 	}

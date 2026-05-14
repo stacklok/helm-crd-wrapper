@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package wrapper wraps Kubernetes CRD YAML files with Helm template
-// directives: optional feature-flag gating, an optional
-// helm.sh/resource-policy: keep annotation, and escaping of literal Go
-// template delimiters that appear inside CRD descriptions.
+// Package wrapper wraps Kubernetes CRD YAML files with two independent Helm
+// template concerns: an `{{- if .Values.crds.install }}` install gate, and a
+// `helm.sh/resource-policy: keep` annotation. Literal Go template delimiters
+// in CRD descriptions are escaped so Helm does not try to interpret them.
 package wrapper
 
 import (
@@ -39,14 +39,16 @@ var embeddedTemplates embed.FS
 // Both embedded and on-disk overrides must provide all three.
 var templateNames = []string{"header", "footer", "keep-annotation"}
 
-// FeatureConditionPlaceholder is the substring inside header.tpl that
-// is replaced with the rendered feature-flag expression.
-const FeatureConditionPlaceholder = "__FEATURE_CONDITION__"
-
-// DefaultValuesPrefix is the values key prefix used to construct feature-flag
-// expressions when -values-prefix is not supplied. It matches the prefix used
-// by stacklok/toolhive's operator chart.
-const DefaultValuesPrefix = ".Values.crds.install"
+// Rule controls the wrapping decisions applied to a single CRD.
+type Rule struct {
+	// Install wraps the CRD in `{{- if .Values.crds.install }} ... {{- end }}`
+	// using the header/footer templates.
+	Install bool
+	// Keep injects the keep-annotation template under metadata.annotations.
+	Keep bool
+	// Escape applies template-delimiter escaping to every line of CRD content.
+	Escape bool
+}
 
 // Options is the full input set required to wrap a directory of CRDs.
 type Options struct {
@@ -54,16 +56,13 @@ type Options struct {
 	SourceDir string
 	// TargetDir is where wrapped templates are written.
 	TargetDir string
-	// Config is the optional per-CRD override config (nil-safe).
-	Config *Config
-	// Defaults are the CLI-flag defaults applied when a CRD has no override.
-	Defaults Defaults
-	// ValuesPrefix is prepended to each feature flag (e.g. `.Values.crds.install`).
-	ValuesPrefix string
+	// Rule controls the wrapping decisions; the same rule is applied to every
+	// CRD found in SourceDir.
+	Rule Rule
 	// TemplatesDir, if non-empty, loads header/footer/keep-annotation templates
 	// from disk instead of the embedded ones.
 	TemplatesDir string
-	// Verbose enables progress output to Stdout.
+	// Verbose enables progress output.
 	Verbose bool
 	// Stdout is the writer for progress messages (defaults to os.Stdout).
 	Stdout io.Writer
@@ -77,12 +76,6 @@ func Run(opts Options) error {
 	}
 	if opts.TargetDir == "" {
 		return errors.New("target directory is required")
-	}
-	if opts.ValuesPrefix == "" {
-		opts.ValuesPrefix = DefaultValuesPrefix
-	}
-	if opts.Config == nil {
-		opts.Config = &Config{}
 	}
 	out := opts.Stdout
 	if out == nil {
@@ -139,18 +132,10 @@ func wrapFile(sourcePath, sourceDir, targetDir string, tmpls map[string]string, 
 	}
 	if opts.Verbose {
 		fmt.Fprintf(out, "  CRD name: %s\n", crdName)
+		fmt.Fprintf(out, "  Install: %t  Keep: %t  Escape: %t\n", opts.Rule.Install, opts.Rule.Keep, opts.Rule.Escape)
 	}
 
-	rule, err := opts.Config.Resolve(crdName, opts.Defaults)
-	if err != nil {
-		return err
-	}
-	if opts.Verbose {
-		fmt.Fprintf(out, "  Feature flags: %v\n", rule.FeatureFlags)
-		fmt.Fprintf(out, "  Keep: %t  Escape: %t\n", rule.Keep, rule.Escape)
-	}
-
-	wrapped, err := WrapContent(content, tmpls, rule, opts.ValuesPrefix)
+	wrapped, err := WrapContent(content, tmpls, opts.Rule)
 	if err != nil {
 		return fmt.Errorf("wrap content: %w", err)
 	}
@@ -164,27 +149,22 @@ func wrapFile(sourcePath, sourceDir, targetDir string, tmpls map[string]string, 
 	return nil
 }
 
-// WrapContent applies the resolved rule to a single CRD YAML document and
-// returns the wrapped bytes. It is exposed for unit and golden-file tests.
-func WrapContent(content []byte, tmpls map[string]string, rule ResolvedRule, valuesPrefix string) ([]byte, error) {
+// WrapContent applies the rule to a single CRD YAML document and returns the
+// wrapped bytes. It is exposed for unit and golden-file tests.
+func WrapContent(content []byte, tmpls map[string]string, rule Rule) ([]byte, error) {
 	var buf bytes.Buffer
 
-	condition := BuildFeatureCondition(rule.FeatureFlags, valuesPrefix)
-	useHeader := condition != ""
-	if useHeader {
-		header := strings.ReplaceAll(tmpls["header"], FeatureConditionPlaceholder, condition)
-		buf.WriteString(header)
+	if rule.Install {
+		buf.WriteString(tmpls["header"])
 	}
 
 	scanner := bufio.NewScanner(bytes.NewReader(content))
-	// Allow long lines: CRD descriptions can be very long.
+	// CRD descriptions can be very long; raise the scanner's max token size.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	skipFirstLine := bytes.HasPrefix(content, []byte("---\n")) || bytes.HasPrefix(content, []byte("---\r\n"))
 	annotationsBlockFound := false
-	annotationsInjected := false
 	keepInjected := false
-	annotationsIndent := ""
 	lineNum := 0
 
 	for scanner.Scan() {
@@ -206,17 +186,14 @@ func WrapContent(content []byte, tmpls map[string]string, rule ResolvedRule, val
 			continue
 		}
 
-		// No annotations: line in metadata — create one before the `name:`
-		// field. CRDs always have metadata.name, so this is a reliable
-		// insertion point. Captured indent on the metadata block is used to
-		// indent the synthesised `annotations:` and `keep` block.
+		// No annotations: line under metadata — create one before the
+		// metadata.name line. CRDs always have metadata.name, so this is a
+		// reliable insertion point.
 		if rule.Keep && !keepInjected && !annotationsBlockFound {
 			if indent, ok := metadataNameLineIndent(raw); ok {
-				annotationsIndent = indent
-				buf.WriteString(annotationsIndent + "annotations:\n")
+				buf.WriteString(indent + "annotations:\n")
 				buf.WriteString(tmpls["keep-annotation"])
 				keepInjected = true
-				annotationsInjected = true
 				// fall through to write the `name:` line itself
 			}
 		}
@@ -234,9 +211,8 @@ func WrapContent(content []byte, tmpls map[string]string, rule ResolvedRule, val
 	if rule.Keep && !keepInjected {
 		return nil, fmt.Errorf("could not locate insertion point for keep annotation: no metadata.name field found")
 	}
-	_ = annotationsInjected // for future diagnostic use
 
-	if useHeader {
+	if rule.Install {
 		buf.WriteString(tmpls["footer"])
 	}
 	return buf.Bytes(), nil
@@ -244,35 +220,14 @@ func WrapContent(content []byte, tmpls map[string]string, rule ResolvedRule, val
 
 // metadataNameLineIndent returns the leading indent string of a `name:` line
 // that sits directly underneath the `metadata:` block. Detection is based on
-// the conventional two-space indent emitted by controller-gen. Only the
-// metadata.name line qualifies — other `name:` lines (e.g. in spec.names) are
-// indented deeper.
+// the conventional two-space indent emitted by controller-gen. Other `name:`
+// lines (e.g. spec.names.singular) are indented deeper and do not match.
 func metadataNameLineIndent(line string) (string, bool) {
-	const conventional = "  " // two-space indent under metadata
+	const conventional = "  "
 	if !strings.HasPrefix(line, conventional+"name:") {
 		return "", false
 	}
 	return conventional, true
-}
-
-// BuildFeatureCondition renders the Helm conditional expression for a set of
-// feature flags using the given values prefix. An empty slice yields the empty
-// string and signals the wrapper to skip the header/footer entirely.
-func BuildFeatureCondition(flags []string, valuesPrefix string) string {
-	if len(flags) == 0 {
-		return ""
-	}
-	if valuesPrefix == "" {
-		valuesPrefix = DefaultValuesPrefix
-	}
-	refs := make([]string, len(flags))
-	for i, f := range flags {
-		refs[i] = valuesPrefix + "." + f
-	}
-	if len(refs) == 1 {
-		return refs[0]
-	}
-	return "or " + strings.Join(refs, " ")
 }
 
 func loadTemplates(dir string) (map[string]string, error) {

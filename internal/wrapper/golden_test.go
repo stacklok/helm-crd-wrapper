@@ -17,10 +17,9 @@ import (
 // goldenCase captures one wrapping scenario. Each case lives as a pair of
 // input/<file>.yaml + golden/<name>.golden.yaml under internal/testdata.
 type goldenCase struct {
-	name   string
-	input  string // path under internal/testdata/
-	rule   ResolvedRule
-	prefix string
+	name  string
+	input string
+	rule  Rule
 }
 
 func TestGolden(t *testing.T) {
@@ -29,38 +28,37 @@ func TestGolden(t *testing.T) {
 		{
 			name:  "keep-existing-annotations",
 			input: "input/with_annotations.yaml",
-			rule:  ResolvedRule{Keep: true, Escape: false},
+			rule:  Rule{Keep: true},
 		},
 		{
 			name:  "keep-missing-annotations",
 			input: "input/no_annotations.yaml",
-			rule:  ResolvedRule{Keep: true, Escape: false},
+			rule:  Rule{Keep: true},
 		},
 		{
 			name:  "escape-template-chars",
 			input: "input/with_template_chars.yaml",
-			rule:  ResolvedRule{Escape: true},
+			rule:  Rule{Escape: true},
 		},
 		{
-			name:  "single-feature-flag",
+			name:  "install-only",
 			input: "input/with_annotations.yaml",
-			rule:  ResolvedRule{FeatureFlags: []string{"server"}, Keep: true, Escape: false},
+			rule:  Rule{Install: true},
 		},
 		{
-			name:  "multi-feature-flag",
+			name:  "install-and-keep",
 			input: "input/with_annotations.yaml",
-			rule:  ResolvedRule{FeatureFlags: []string{"server", "virtualMcp"}, Keep: true, Escape: false},
+			rule:  Rule{Install: true, Keep: true},
+		},
+		{
+			name:  "install-keep-escape",
+			input: "input/with_template_chars.yaml",
+			rule:  Rule{Install: true, Keep: true, Escape: true},
 		},
 		{
 			name:  "passthrough",
 			input: "input/with_annotations.yaml",
-			rule:  ResolvedRule{Escape: true},
-		},
-		{
-			name:   "custom-prefix-and-flag",
-			input:  "input/no_annotations.yaml",
-			rule:   ResolvedRule{FeatureFlags: []string{"core"}, Keep: false, Escape: true},
-			prefix: ".Values.features",
+			rule:  Rule{},
 		},
 	}
 
@@ -76,11 +74,7 @@ func TestGolden(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read input: %v", err)
 			}
-			prefix := tc.prefix
-			if prefix == "" {
-				prefix = DefaultValuesPrefix
-			}
-			got, err := WrapContent(in, tmpls, tc.rule, prefix)
+			got, err := WrapContent(in, tmpls, tc.rule)
 			if err != nil {
 				t.Fatalf("WrapContent: %v", err)
 			}

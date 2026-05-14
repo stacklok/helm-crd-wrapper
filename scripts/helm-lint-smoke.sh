@@ -30,12 +30,8 @@ EOF
 
 cat > "$chart_dir/values.yaml" <<'EOF'
 crds:
+  install: true
   keep: true
-  install:
-    server: true
-    virtualMcp: true
-features:
-  core: true
 EOF
 
 go build -o "$workdir/helm-crd-wrapper" .
@@ -43,9 +39,9 @@ go build -o "$workdir/helm-crd-wrapper" .
 "$workdir/helm-crd-wrapper" \
   -source internal/testdata/input \
   -target "$chart_dir/templates" \
+  -install \
   -keep \
   -escape \
-  -values-prefix .Values.crds.install \
   -verbose
 
 # helm template should render without error. Output is discarded; failures
