@@ -60,6 +60,16 @@ func TestGolden(t *testing.T) {
 			input: "input/with_annotations.yaml",
 			rule:  Rule{},
 		},
+		{
+			name:  "custom-value-paths",
+			input: "input/with_annotations.yaml",
+			rule: Rule{
+				Install:      true,
+				Keep:         true,
+				InstallValue: ".Values.installCRDs",
+				KeepValue:    ".Values.preserveCRDs",
+			},
+		},
 	}
 
 	tmpls, err := loadTemplates("")

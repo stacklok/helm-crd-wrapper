@@ -1,1 +1,1 @@
-{{- if .Values.crds.install }}
+{{- if __INSTALL_CONDITION__ }}

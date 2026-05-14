@@ -142,6 +142,34 @@ func TestWrapContent_InstallWrapsInConditional(t *testing.T) {
 	}
 }
 
+// TestWrapContent_CustomValuePaths confirms -install-value and -keep-value
+// rewrite the Helm value paths in both conditionals.
+func TestWrapContent_CustomValuePaths(t *testing.T) {
+	t.Parallel()
+	in := readFixture(t, "input/with_annotations.yaml")
+	rule := Rule{
+		Install:      true,
+		Keep:         true,
+		InstallValue: ".Values.installCRDs",
+		KeepValue:    ".Values.preserveCRDs",
+	}
+	got, err := WrapContent(in, loadTestTemplates(t), rule)
+	if err != nil {
+		t.Fatalf("WrapContent: %v", err)
+	}
+	s := string(got)
+	if !strings.Contains(s, "{{- if .Values.installCRDs }}") {
+		t.Errorf("expected install conditional with custom path, got %q", firstLine(s))
+	}
+	if !strings.Contains(s, "{{- if .Values.preserveCRDs }}") {
+		t.Errorf("expected keep conditional with custom path")
+	}
+	// Defaults must not leak when overrides are supplied.
+	if strings.Contains(s, ".Values.crds.install") || strings.Contains(s, ".Values.crds.keep") {
+		t.Errorf("default value paths leaked when overrides were set:\n%s", s)
+	}
+}
+
 // TestWrapContent_InstallDisabledSkipsHeader confirms Install=false produces
 // no Helm wrapper at all.
 func TestWrapContent_InstallDisabledSkipsHeader(t *testing.T) {

@@ -39,15 +39,37 @@ var embeddedTemplates embed.FS
 // Both embedded and on-disk overrides must provide all three.
 var templateNames = []string{"header", "footer", "keep-annotation"}
 
+// Placeholder tokens substituted in the templates at render time. These let
+// callers override the Helm value path used by each conditional without
+// providing a full template override via -templates-dir.
+const (
+	installConditionPlaceholder = "__INSTALL_CONDITION__"
+	keepConditionPlaceholder    = "__KEEP_CONDITION__"
+)
+
+// DefaultInstallValue is the Helm value path used by the install gate when no
+// -install-value flag is supplied.
+const DefaultInstallValue = ".Values.crds.install"
+
+// DefaultKeepValue is the Helm value path used by the keep-annotation gate
+// when no -keep-value flag is supplied.
+const DefaultKeepValue = ".Values.crds.keep"
+
 // Rule controls the wrapping decisions applied to a single CRD.
 type Rule struct {
-	// Install wraps the CRD in `{{- if .Values.crds.install }} ... {{- end }}`
+	// Install wraps the CRD in `{{- if <InstallValue> }} ... {{- end }}`
 	// using the header/footer templates.
 	Install bool
 	// Keep injects the keep-annotation template under metadata.annotations.
 	Keep bool
 	// Escape applies template-delimiter escaping to every line of CRD content.
 	Escape bool
+	// InstallValue is the Helm value path written into the install
+	// conditional. Empty means use DefaultInstallValue.
+	InstallValue string
+	// KeepValue is the Helm value path written into the keep-annotation
+	// conditional. Empty means use DefaultKeepValue.
+	KeepValue string
 }
 
 // Options is the full input set required to wrap a directory of CRDs.
@@ -154,8 +176,20 @@ func wrapFile(sourcePath, sourceDir, targetDir string, tmpls map[string]string, 
 func WrapContent(content []byte, tmpls map[string]string, rule Rule) ([]byte, error) {
 	var buf bytes.Buffer
 
+	installValue := rule.InstallValue
+	if installValue == "" {
+		installValue = DefaultInstallValue
+	}
+	keepValue := rule.KeepValue
+	if keepValue == "" {
+		keepValue = DefaultKeepValue
+	}
+
+	header := strings.ReplaceAll(tmpls["header"], installConditionPlaceholder, installValue)
+	keepBlock := strings.ReplaceAll(tmpls["keep-annotation"], keepConditionPlaceholder, keepValue)
+
 	if rule.Install {
-		buf.WriteString(tmpls["header"])
+		buf.WriteString(header)
 	}
 
 	scanner := bufio.NewScanner(bytes.NewReader(content))
@@ -180,7 +214,7 @@ func WrapContent(content []byte, tmpls map[string]string, rule Rule) ([]byte, er
 		// Inject keep into an existing annotations block.
 		if rule.Keep && !keepInjected && trimmed == "annotations:" {
 			buf.WriteString(raw + "\n")
-			buf.WriteString(tmpls["keep-annotation"])
+			buf.WriteString(keepBlock)
 			annotationsBlockFound = true
 			keepInjected = true
 			continue
@@ -192,7 +226,7 @@ func WrapContent(content []byte, tmpls map[string]string, rule Rule) ([]byte, er
 		if rule.Keep && !keepInjected && !annotationsBlockFound {
 			if indent, ok := metadataNameLineIndent(raw); ok {
 				buf.WriteString(indent + "annotations:\n")
-				buf.WriteString(tmpls["keep-annotation"])
+				buf.WriteString(keepBlock)
 				keepInjected = true
 				// fall through to write the `name:` line itself
 			}

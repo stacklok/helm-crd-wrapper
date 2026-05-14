@@ -37,10 +37,14 @@ Or download a release binary from the
 helm-crd-wrapper \
   -source <dir>           # required: directory of raw CRD YAML files
   -target <dir>           # required: directory to write wrapped templates
-  -install                # wrap each CRD in {{- if .Values.crds.install }}
+  -install                # wrap each CRD in {{- if <install-value> }}
                           #          (default: true)
+  -install-value <expr>   # Helm value path used by the install conditional
+                          #          (default: ".Values.crds.install")
   -keep                   # inject helm.sh/resource-policy: keep
                           #          (default: true)
+  -keep-value <expr>      # Helm value path used by the keep conditional
+                          #          (default: ".Values.crds.keep")
   -escape                 # escape {{ }} in CRD content
                           #          (default: true)
   -templates-dir <dir>    # override embedded templates from disk
@@ -66,9 +70,9 @@ the chart consumer makes the **render-time** choice via `values.yaml`:
 
 | CLI flag    | Build-time effect                            | Render-time control                                              |
 | ----------- | -------------------------------------------- | ---------------------------------------------------------------- |
-| `-install`  | Wraps each CRD in `{{- if .Values.crds.install }} ... {{- end }}` | `crds.install: true/false` in `values.yaml`           |
-| `-keep`     | Injects the keep-annotation block, itself wrapped in `{{- if .Values.crds.keep }}` | `crds.keep: true/false` in `values.yaml`     |
-| `-escape`   | Rewrites raw `{{`/`}}` in CRD descriptions to Helm-safe literals | n/a (escape is purely a build-time fix-up)                       |
+| `-install` (+ `-install-value`) | Wraps each CRD in `{{- if <install-value> }} ... {{- end }}` | The value at `<install-value>` (default `.Values.crds.install`) in `values.yaml` |
+| `-keep` (+ `-keep-value`)       | Injects the keep-annotation block, itself wrapped in `{{- if <keep-value> }}` | The value at `<keep-value>` (default `.Values.crds.keep`) in `values.yaml` |
+| `-escape`                       | Rewrites raw `{{`/`}}` in CRD descriptions to Helm-safe literals | n/a (escape is purely a build-time fix-up)                       |
 
 A consumer chart therefore needs:
 
@@ -110,25 +114,51 @@ Both wrapping decisions are properties of the **chart**, not the **CRD**:
 
 So the tool stays narrow: one binary, two flags, no per-CRD overrides.
 
+## Custom value paths
+
+If `crds.install` / `crds.keep` clash with an existing values schema in your
+chart, point the flags at any expression you like:
+
+```bash
+helm-crd-wrapper \
+  -source ./crds \
+  -target ./templates \
+  -install-value .Values.installCRDs \
+  -keep-value    .Values.preserveCRDs
+```
+
+Produces:
+
+```yaml
+{{- if .Values.installCRDs }}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    {{- if .Values.preserveCRDs }}
+    helm.sh/resource-policy: keep
+    {{- end }}
+  ...
+{{- end }}
+```
+
+The flag accepts any Helm conditional expression — a single value, an `or`,
+an `and`, anything that fits inside `{{- if ... }}`.
+
 ## Overriding the templates
 
-The embedded templates live under
-[`internal/wrapper/templates`](./internal/wrapper/templates/). To replace any
-of them, point `-templates-dir` at a directory containing all three files:
+For more involved customisation than swapping value paths, point
+`-templates-dir` at a directory containing all three template files:
 
 | File                  | Purpose                                                                            |
 | --------------------- | ---------------------------------------------------------------------------------- |
-| `header.tpl`          | Opening conditional (default: `{{- if .Values.crds.install }}`).                   |
+| `header.tpl`          | Opening conditional. May contain the literal `__INSTALL_CONDITION__` placeholder, which is replaced with `-install-value`. |
 | `footer.tpl`          | Closing line (default: `{{- end }}`).                                              |
-| `keep-annotation.tpl` | Block inserted under `metadata.annotations:` when `-keep` is enabled.              |
+| `keep-annotation.tpl` | Block inserted under `metadata.annotations:` when `-keep` is enabled. May contain the literal `__KEEP_CONDITION__` placeholder, which is replaced with `-keep-value`. |
 
-For example, a chart that wants the install gate to read
-`.Values.installCRDs` rather than `.Values.crds.install` can override
-`header.tpl` to `{{- if .Values.installCRDs }}` and nothing else changes.
-
-A chart that wants the keep annotation always on (no `crds.keep` value)
-can override `keep-annotation.tpl` to drop the `{{- if .Values.crds.keep }}`
-wrapper.
+Templates without the placeholders are used verbatim — useful if you want to
+hardcode the annotation always on (no `crds.keep` value) by dropping the
+`{{- if ... }}` wrapper from `keep-annotation.tpl` entirely.
 
 ## End-to-end examples
 

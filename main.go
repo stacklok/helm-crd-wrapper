@@ -37,8 +37,10 @@ func main() {
 	var (
 		sourceDir    = flag.String("source", "", "Source directory containing raw CRD YAML files (required)")
 		targetDir    = flag.String("target", "", "Target directory for wrapped Helm templates (required)")
-		install      = flag.Bool("install", true, "Wrap each CRD in {{- if .Values.crds.install }} ... {{- end }}")
+		install      = flag.Bool("install", true, "Wrap each CRD in {{- if <install-value> }} ... {{- end }}")
+		installValue = flag.String("install-value", wrapper.DefaultInstallValue, "Helm value path used by the install conditional")
 		keep         = flag.Bool("keep", true, "Inject helm.sh/resource-policy: keep annotation")
+		keepValue    = flag.String("keep-value", wrapper.DefaultKeepValue, "Helm value path used by the keep-annotation conditional")
 		escape       = flag.Bool("escape", true, "Escape literal {{ and }} in CRD content")
 		templatesDir = flag.String("templates-dir", "", "Override embedded templates from disk")
 		verbose      = flag.Bool("verbose", false, "Enable verbose output")
@@ -66,9 +68,11 @@ func main() {
 		TemplatesDir: *templatesDir,
 		Verbose:      *verbose,
 		Rule: wrapper.Rule{
-			Install: *install,
-			Keep:    *keep,
-			Escape:  *escape,
+			Install:      *install,
+			Keep:         *keep,
+			Escape:       *escape,
+			InstallValue: *installValue,
+			KeepValue:    *keepValue,
 		},
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
