@@ -122,7 +122,7 @@ func Run(opts Options) error {
 		return fmt.Errorf("no YAML files found in %s", opts.SourceDir)
 	}
 
-	fmt.Fprintf(out, "Found %d CRD files to process\n", len(files))
+	_, _ = fmt.Fprintf(out, "Found %d CRD files to process\n", len(files))
 
 	for _, file := range files {
 		if err := wrapFile(file, cleanSource, opts.TargetDir, tmpls, opts, out); err != nil {
@@ -130,13 +130,13 @@ func Run(opts Options) error {
 		}
 	}
 
-	fmt.Fprintln(out, "CRD wrapping completed successfully")
+	_, _ = fmt.Fprintln(out, "CRD wrapping completed successfully")
 	return nil
 }
 
 func wrapFile(sourcePath, sourceDir, targetDir string, tmpls map[string]string, opts Options, out io.Writer) error {
 	filename := filepath.Base(sourcePath)
-	fmt.Fprintf(out, "Processing: %s\n", filename)
+	_, _ = fmt.Fprintf(out, "Processing: %s\n", filename)
 
 	cleanPath := filepath.Clean(sourcePath)
 	if !strings.HasPrefix(cleanPath, sourceDir+string(filepath.Separator)) && cleanPath != sourceDir {
@@ -153,8 +153,8 @@ func wrapFile(sourcePath, sourceDir, targetDir string, tmpls map[string]string, 
 		return fmt.Errorf("extract CRD name: %w", err)
 	}
 	if opts.Verbose {
-		fmt.Fprintf(out, "  CRD name: %s\n", crdName)
-		fmt.Fprintf(out, "  Install: %t  Keep: %t  Escape: %t\n", opts.Rule.Install, opts.Rule.Keep, opts.Rule.Escape)
+		_, _ = fmt.Fprintf(out, "  CRD name: %s\n", crdName)
+		_, _ = fmt.Fprintf(out, "  Install: %t  Keep: %t  Escape: %t\n", opts.Rule.Install, opts.Rule.Keep, opts.Rule.Escape)
 	}
 
 	wrapped, err := WrapContent(content, tmpls, opts.Rule)
@@ -167,7 +167,7 @@ func wrapFile(sourcePath, sourceDir, targetDir string, tmpls map[string]string, 
 		return fmt.Errorf("write file: %w", err)
 	}
 
-	fmt.Fprintf(out, "  Created: %s\n", targetPath)
+	_, _ = fmt.Fprintf(out, "  Created: %s\n", targetPath)
 	return nil
 }
 
